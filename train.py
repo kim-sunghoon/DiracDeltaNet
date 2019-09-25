@@ -10,146 +10,117 @@ import torchvision.datasets as datasets
 
 import os
 import argparse
+import time
 
 from models import ShuffleNetv2_wrapper
 from models import DiracDeltaNet_wrapper
 
 from torch.autograd import Variable
 from extensions.utils import progress_bar
+from extensions.utils import create_dir
 from extensions.model_refinery_wrapper import ModelRefineryWrapper
 from extensions.refinery_loss import RefineryLoss
 
-def create_dir(dirname):
-    """ This function creates a directory in case it doesn't exist
-    """
-    if not os.path.exists(dirname):
-        os.makedirs(dirname)
+from r_utils.config_helpers import merge_configs
 
 
-parser = argparse.ArgumentParser(description='PyTorch imagenet Training in quant')
+def select_dataset_config():
+    from general_config import cfg as general_cfg
+    ## for the CIFAR10 dataset use:
+    from r_utils.configs.cifar10_config import cfg as dataset_cfg
+    ## for the MNIST dataset use:
+    #  from r_utils.configs.mnist_config import cfg as dataset_cfg
+    ## for the CIFAR100 dataset use:
+    #  from r_utils.configs.cifar100_config import cfg as dataset_cfg
+    ## for the ImageNet  dataset use:
+    #  from r_utils.configs.ImageNet_config import cfg as dataset_cfg
 
-parser.add_argument('--datadir', help='path to dataset')
-parser.add_argument('--inputdir', help='path to input model')
-parser.add_argument('--outputdir', help='path to output model')
-parser.add_argument('--logdir', default='./log/log.csv', help='path to log')
+    return merge_configs([general_cfg, dataset_cfg])
 
-parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
-
-parser.add_argument('--lr', default=0.5, type=float, help='learning rate')
-parser.add_argument('--lr_policy', choices=('step', 'linear'), help='learning rate decay policy', default='linear')
-parser.add_argument('--totalepoch', default=90, type=int, help='how many epoch')
-parser.add_argument('--batch_size', '-b', default=32, type=int, help='batch size')
-parser.add_argument('--test_batch_size', '-tb', default=32, type=int, help='test_batch size')
-parser.add_argument('--weight_decay', '--wd', default=4e-5, type=float, help='weight decay (default: 4e-5)')
-parser.add_argument('--crop_scale', default=0.2, type=float, help='random resized crop scale')
-
-parser.add_argument('--expansion', '-e', default=2.0, type=float, help='expansion rate for the middle plate')
-parser.add_argument('--base_channel_size', default=116, type=int, help='base channel size of the shuffle block')
-parser.add_argument('--weight_bit', default=32, type=int, help='conv weight bitwidth')
-parser.add_argument('--act_bit', default=32, type=int, help='activation bitwidth')
-parser.add_argument('--first_weight_bit', default=32, type=int, help='first conv weight bitwidth')
-parser.add_argument('--first_act_bit', default=32, type=int, help='first conv activation bitwidth')
-parser.add_argument('--last_weight_bit', default=32, type=int, help='last conv weight bitwidth')
-parser.add_argument('--last_act_bit', default=32, type=int, help='last conv activation bitwidth')
-parser.add_argument('--fc_bit', default=32, type=int, help='fc weight bitwidth')
-parser.add_argument('--n_gpu', default = '0,1', type = str, help = 'specify gpu #')
-
-args = parser.parse_args()
-os.environ["CUDA_VISIBLE_DEVICES"] = args.n_gpu
-args.MGPU = True if len(list(map(int, args.n_gpu.split(',')))) > 1 else False
-
-print(args)
-
-
-# Data
-print('==> Preparing data..')
-# Data loading code
-traindir = os.path.join(args.datadir, 'train')
-valdir = os.path.join(args.datadir, 'val')
-    
-normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                 std=[0.229, 0.224, 0.225])
-
-transform_train=transforms.Compose([
-        transforms.RandomResizedCrop(224,scale=(args.crop_scale,1.0)),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        normalize,
-    ])
-
-
-transform_test = transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            normalize,
-        ])
-
-#imagenet
-trainset = datasets.ImageFolder(traindir, transform_train)
-testset = datasets.ImageFolder(valdir, transform_test)
+## TODO: imagetnet일때문 RefineryLoss를 사용할 수 있다. XNOR쓴 그룹에서 이런걸 내놨었네. 다른 dataset일때 loss를 바꿔야함
 num_classes=1000
 
-trainloader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, pin_memory=True, num_workers=30)
-testloader = torch.utils.data.DataLoader(testset, batch_size=args.test_batch_size, shuffle=False, pin_memory=True, num_workers=30)
-
-
-use_cuda = torch.cuda.is_available()
 best_acc = 0.0  # best test accuracy
 start_epoch = 0  # start from epoch 0 or last checkpoint epoch
 
-if args.inputdir != None:
-    input_path = args.inputdir
-    print('Using input path: %s to fine tune' % input_path)
-    checkpoint = torch.load(input_path)
-    init_net = checkpoint['net']
-    init_net=init_net.to('cpu')
-else:
-    if args.resume:
-        print('Resuming from checkpoint')
-    else:
-        print('Training from scratch')
+def parse_opts():
+    parser = argparse.ArgumentParser(description='PyTorch imagenet Training in quant')
+    
+    parser.add_argument('--datadir', help='path to dataset')
+    parser.add_argument('--inputdir', help='path to input model')
+    parser.add_argument('--outputdir', help='path to output model')
+    parser.add_argument('--logdir', default='./log/log.csv', help='path to log')
+    
+    parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
+    
+    parser.add_argument('--lr', default=0.5, type=float, help='learning rate')
+    parser.add_argument('--lr_policy', choices=('step', 'linear'), help='learning rate decay policy', default='linear')
+    parser.add_argument('--totalepoch', default=90, type=int, help='how many epoch')
+    parser.add_argument('--batch_size', '-b', default=32, type=int, help='batch size')
+    parser.add_argument('--test_batch_size', '-tb', default=32, type=int, help='test_batch size')
+    parser.add_argument('--weight_decay', '--wd', default=4e-5, type=float, help='weight decay (default: 4e-5)')
+    parser.add_argument('--crop_scale', default=0.2, type=float, help='random resized crop scale')
+    
+    parser.add_argument('--expansion', '-e', default=2.0, type=float, help='expansion rate for the middle plate')
+    parser.add_argument('--base_channel_size', default=116, type=int, help='base channel size of the shuffle block')
+    parser.add_argument('--weight_bit', default=32, type=int, help='conv weight bitwidth')
+    parser.add_argument('--act_bit', default=32, type=int, help='activation bitwidth')
+    parser.add_argument('--first_weight_bit', default=32, type=int, help='first conv weight bitwidth')
+    parser.add_argument('--first_act_bit', default=32, type=int, help='first conv activation bitwidth')
+    parser.add_argument('--last_weight_bit', default=32, type=int, help='last conv weight bitwidth')
+    parser.add_argument('--last_act_bit', default=32, type=int, help='last conv activation bitwidth')
+    parser.add_argument('--fc_bit', default=32, type=int, help='fc weight bitwidth')
+    parser.add_argument('--n_gpu', default = "0,1,2,3", type = str, help = 'specify gpu #')
+    
+    args = parser.parse_args()
 
-create_dir(os.path.dirname(args.outputdir))
-output_path =args.outputdir
-print('Using output path: %s' % output_path)
+    args.use_cuda = torch.cuda.is_available()
+    args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+    # TODO: 왜 multigpu할때 device_ids를 해줘야하지... torch.cuda.device_count() 내용도 바뀌지가 않는다. 
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.n_gpu
+
+    print("cuda visible devices: {}".format(os.environ["CUDA_VISIBLE_DEVICES"]))
+
+    args.MGPU = True if len(list(map(int, args.n_gpu.split(',')))) > 1 else False
+    
+    return vars(args)
 
 
-if not args.resume:
-    if args.inputdir != None:
-        net=DiracDeltaNet_wrapper(expansion=args.expansion, base_channelsize=args.base_channel_size, num_classes=num_classes, 
-            weight_bit=args.weight_bit, act_bit=args.act_bit, first_weight_bit=args.first_weight_bit, first_act_bit=args.first_act_bit, 
-            last_weight_bit=args.last_weight_bit, last_act_bit=args.last_act_bit, fc_bit=args.fc_bit, extern_init=True, init_model=init_net)
-    else:
-        net=DiracDeltaNet_wrapper(expansion=args.expansion, base_channelsize=args.base_channel_size, num_classes=num_classes, 
-            weight_bit=args.weight_bit, act_bit=args.act_bit, first_weight_bit=args.first_weight_bit, first_act_bit=args.first_act_bit, 
-            last_weight_bit=args.last_weight_bit, last_act_bit=args.last_act_bit, fc_bit=args.fc_bit)
-else:
-    checkpoint = torch.load(output_path)
-    net = checkpoint['net']
-    best_acc = checkpoint['acc_1']
-    start_epoch = checkpoint['epoch']+1
 
-label_refinery=torch.load('./resnet50.t7')
-net = ModelRefineryWrapper(net, label_refinery)
+# Data
+def data_set_config_origin(args):
+    print('==> Preparing data..')
+    # Data loading code
+    traindir = os.path.join(args.datadir, 'train')
+    valdir = os.path.join(args.datadir, 'val')
+        
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                     std=[0.229, 0.224, 0.225])
+    
+    transform_train=transforms.Compose([
+            transforms.RandomResizedCrop(224,scale=(args.crop_scale,1.0)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            normalize,
+        ])
+    
+    
+    transform_test = transforms.Compose([
+                transforms.Resize(256),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                normalize,
+            ])
+    
+    #imagenet
+    trainset = datasets.ImageFolder(traindir, transform_train)
+    testset = datasets.ImageFolder(valdir, transform_test)
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-print(device)
-#  if torch.cuda.device_count() > 1:
-if args.MGPU:
-    print("Let's use", torch.cuda.device_count(), "GPUs!")
-    net = nn.DataParallel(net)
-net=net.to(device)
+    trainloader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, pin_memory=True, num_workers=30)
+    testloader = torch.utils.data.DataLoader(testset, batch_size=args.test_batch_size, shuffle=False, pin_memory=True, num_workers=30)
+    return trainloader, testloader
 
-criterion = RefineryLoss()
-
-model_trainable_parameters = filter(lambda x: x.requires_grad, net.parameters())
-optimizer = optim.SGD(model_trainable_parameters, lr=args.lr, momentum=0.9, weight_decay=args.weight_decay)
-
-if not args.resume:
-    iteration=0
-else:
-    iteration=start_epoch*(int(1281167/args.batch_size)+1)
 
 def accuracy(output, target, topk=(1,)):
     """Computes the precision@k for the specified values of k"""
@@ -191,20 +162,21 @@ def adjust_learning_rate(optimizer, iteration, lr):
 
 
 # Training
-def train(epoch):
+def train(epoch, net, optimizer, criterion, args):
     global iteration
+
     print('\nEpoch: %d' % epoch)
     net.train()
     criterion.train()
-    net.to(device)
+    net.to(args.device)
     train_loss = 0
     correct_1 = 0 # moniter top 1
     correct_5 = 0
     total = 0
     for batch_idx, (inputs, targets) in enumerate(trainloader):
         adjust_learning_rate(optimizer, iteration, args.lr)
-        if use_cuda:
-            inputs, targets = inputs.cuda(device,non_blocking=True), targets.cuda(device,non_blocking=True)
+        if args.use_cuda:
+            inputs, targets = inputs.cuda(args.device, non_blocking=True), targets.cuda(args.device,non_blocking=True)
         optimizer.zero_grad()
         outputs = net(inputs)
         loss = criterion(outputs, targets)
@@ -228,7 +200,7 @@ def train(epoch):
             % (train_loss/(batch_idx+1), 100.*float(correct_1)/float(total), correct_1, total))
     return 100.*float(correct_1)/float(total),100.*float(correct_5)/float(total),train_loss
 
-def test(epoch):
+def test(epoch, net, criterion, args):
     global best_acc
     net.eval()
     criterion.eval()
@@ -237,8 +209,8 @@ def test(epoch):
     correct_5 = 0
     total = 0
     for batch_idx, (inputs, targets) in enumerate(testloader):
-        if use_cuda:
-            inputs, targets = inputs.cuda(device), targets.cuda(device)
+        if args.use_cuda:
+            inputs, targets = inputs.cuda(args.device), targets.cuda(args.device)
         with torch.no_grad():
             outputs = net(inputs)
         loss = criterion(outputs, targets)
@@ -262,7 +234,7 @@ def test(epoch):
     if acc_1 > best_acc:
         print('Saving..')
         state = {
-            'net': net.module.model if use_cuda and torch.cuda.device_count() > 1 else net.model,
+            'net': net.module.model if args.use_cuda and args.MGPU else net.model,
             'acc_1': acc_1,
             'acc_5': 100.*float(correct_5)/float(total),
             'lr': args.lr,
@@ -276,20 +248,88 @@ def test(epoch):
 
     return 100.*float(correct_1)/float(total),100.*float(correct_5)/float(total),test_loss
 
-create_dir(os.path.dirname(args.logdir))
-if not args.resume:
-    f=open(args.logdir,'w')
-    f.write("Epoch, tr-top1, tr-top5, tr-loss, tt-top1, tt-top5, tt-loss \n")
-    f.close()
-else:
-    f=open(args.logdir,'a')
-    #  f.write("Epoch, tr-top1, tr-top5, tr-loss, tt-top1, tt-top5, tt-loss \n")
-    f.close()
+def load_cnn(args):
+    global best_acc
+    global start_epoch
 
-for epoch in range(start_epoch, int(args.totalepoch)):
-    f=open(args.logdir,'a')
-    acc1,acc5,loss=train(epoch)
-    f.write("{}, {}, {}, {},".format(str(epoch), str(acc1), str(acc5), str(loss)))
-    acc1,acc5,loss=test(epoch)
-    f.write("{}, {}, {} \n".format(str(acc1), str(acc5), str(loss)))
-    f.close()
+    if args.inputdir != None:
+        input_path = args.inputdir
+        print('Using input path: %s to fine tune' % input_path)
+        checkpoint = torch.load(input_path)
+        init_net = checkpoint['net']
+        init_net=init_net.to('cpu')
+    else:
+        if args.resume:
+            print('Resuming from checkpoint')
+        else:
+            print('Training from scratch')
+    if not args.resume:
+        if args.inputdir != None:
+            net=DiracDeltaNet_wrapper(expansion=args.expansion, base_channelsize=args.base_channel_size, num_classes=num_classes, 
+                weight_bit=args.weight_bit, act_bit=args.act_bit, first_weight_bit=args.first_weight_bit, first_act_bit=args.first_act_bit, 
+                last_weight_bit=args.last_weight_bit, last_act_bit=args.last_act_bit, fc_bit=args.fc_bit, extern_init=True, init_model=init_net)
+        else:
+            net=DiracDeltaNet_wrapper(expansion=args.expansion, base_channelsize=args.base_channel_size, num_classes=num_classes, 
+                weight_bit=args.weight_bit, act_bit=args.act_bit, first_weight_bit=args.first_weight_bit, first_act_bit=args.first_act_bit, 
+                last_weight_bit=args.last_weight_bit, last_act_bit=args.last_act_bit, fc_bit=args.fc_bit)
+    else:
+        checkpoint = torch.load(output_path)
+        net = checkpoint['net']
+        best_acc = checkpoint['acc_1']
+        start_epoch = checkpoint['epoch']+1
+    
+    # reuse sturcture
+    label_refinery=torch.load('./resnet50.t7')
+    net = ModelRefineryWrapper(net, label_refinery)
+    
+    #  if torch.cuda.device_count() > 1:
+    if args.MGPU:
+        print("Let's use", args.n_gpu, "GPUs!")
+        net = nn.DataParallel(net, device_ids = list(map(int, args.n_gpu.split(','))))
+    net=net.to(args.device)
+    return net
+
+
+if __name__ == "__main__":
+    args = parse_opts()
+    cfg = select_dataset_config()
+    args = merge_configs([cfg, args])
+
+    print(args)
+
+    create_dir(os.path.dirname(args.outputdir))
+    output_path = args.outputdir
+    print('Using output path: {}'.format(output_path))
+
+    trainloader, testloader = data_set_config_origin(args)
+    criterion = RefineryLoss()
+
+    net = load_cnn(args)
+
+    model_trainable_parameters = filter(lambda x: x.requires_grad, net.parameters())
+    optimizer = optim.SGD(model_trainable_parameters, lr=args.lr, momentum=0.9, weight_decay=args.weight_decay)
+
+    if not args.resume:
+        iteration = 0
+    else:
+        iteration = start_epoch*(int(1281167/args.batch_size)+1)
+
+    create_dir(os.path.dirname(args.logdir))
+    if not args.resume:
+        f=open(args.logdir,'w')
+        f.write("Epoch, tr-top1, tr-top5, tr-loss, tt-top1, tt-top5, tt-loss \n")
+        f.close()
+
+    start = time.time()
+    for epoch in range(start_epoch, int(args.totalepoch)):
+        f=open(args.logdir,'a')
+
+        acc1,acc5,loss=train(epoch, net, optimizer, criterion, args)
+        f.write("{}, {}, {}, {},".format(str(epoch), str(acc1), str(acc5), str(loss)))
+
+        acc1,acc5,loss=test(epoch, net, criterion, args)
+        f.write("{}, {}, {} \n".format(str(acc1), str(acc5), str(loss)))
+        f.close()
+    end = (time.time() - start) // 60
+
+    print("train time: {}D {}H {}M".format(end//1440, (end%1440)//60, end%60))
