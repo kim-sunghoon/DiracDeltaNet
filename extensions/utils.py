@@ -14,6 +14,11 @@ import torch.nn.init as init
 import numpy as np
 
 
+def create_dir(dirname):
+    """ This function creates a directory in case it doesn't exist
+    """
+    if not os.path.exists(dirname):
+        os.makedirs(dirname)
 
 def get_mean_and_std(dataset):
     '''Compute the mean and std value of dataset.'''

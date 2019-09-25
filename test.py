@@ -120,4 +120,4 @@ def test():
     return 100.*float(correct_1)/float(total),100.*float(correct_5)/float(total),test_loss
 
 acc1,acc5,loss=test()
-print('top-1 accuracy: {0}, top-5 accuracy: {1}'.format(acc1,acc5))
+print('top-1 accuracy: {0:.3f}%, top-5 accuracy: {1:.3f}%'.format(acc1,acc5))

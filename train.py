@@ -19,20 +19,27 @@ from extensions.utils import progress_bar
 from extensions.model_refinery_wrapper import ModelRefineryWrapper
 from extensions.refinery_loss import RefineryLoss
 
+def create_dir(dirname):
+    """ This function creates a directory in case it doesn't exist
+    """
+    if not os.path.exists(dirname):
+        os.makedirs(dirname)
+
 
 parser = argparse.ArgumentParser(description='PyTorch imagenet Training in quant')
 
 parser.add_argument('--datadir', help='path to dataset')
 parser.add_argument('--inputdir', help='path to input model')
 parser.add_argument('--outputdir', help='path to output model')
-parser.add_argument('--logdir', default='./log/log.txt', help='path to log')
+parser.add_argument('--logdir', default='./log/log.csv', help='path to log')
 
 parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
 
 parser.add_argument('--lr', default=0.5, type=float, help='learning rate')
 parser.add_argument('--lr_policy', choices=('step', 'linear'), help='learning rate decay policy', default='linear')
 parser.add_argument('--totalepoch', default=90, type=int, help='how many epoch')
-parser.add_argument('--batch_size', '-b', default=1024, type=int, help='batch size')
+parser.add_argument('--batch_size', '-b', default=32, type=int, help='batch size')
+parser.add_argument('--test_batch_size', '-tb', default=32, type=int, help='test_batch size')
 parser.add_argument('--weight_decay', '--wd', default=4e-5, type=float, help='weight decay (default: 4e-5)')
 parser.add_argument('--crop_scale', default=0.2, type=float, help='random resized crop scale')
 
@@ -45,8 +52,13 @@ parser.add_argument('--first_act_bit', default=32, type=int, help='first conv ac
 parser.add_argument('--last_weight_bit', default=32, type=int, help='last conv weight bitwidth')
 parser.add_argument('--last_act_bit', default=32, type=int, help='last conv activation bitwidth')
 parser.add_argument('--fc_bit', default=32, type=int, help='fc weight bitwidth')
+parser.add_argument('--n_gpu', default = '0,1', type = str, help = 'specify gpu #')
 
 args = parser.parse_args()
+os.environ["CUDA_VISIBLE_DEVICES"] = args.n_gpu
+args.MGPU = True if len(list(map(int, args.n_gpu.split(',')))) > 1 else False
+
+print(args)
 
 
 # Data
@@ -79,7 +91,7 @@ testset = datasets.ImageFolder(valdir, transform_test)
 num_classes=1000
 
 trainloader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, pin_memory=True, num_workers=30)
-testloader = torch.utils.data.DataLoader(testset, batch_size=1000, shuffle=False, pin_memory=True, num_workers=30)
+testloader = torch.utils.data.DataLoader(testset, batch_size=args.test_batch_size, shuffle=False, pin_memory=True, num_workers=30)
 
 
 use_cuda = torch.cuda.is_available()
@@ -98,6 +110,7 @@ else:
     else:
         print('Training from scratch')
 
+create_dir(os.path.dirname(args.outputdir))
 output_path =args.outputdir
 print('Using output path: %s' % output_path)
 
@@ -122,7 +135,8 @@ net = ModelRefineryWrapper(net, label_refinery)
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print(device)
-if torch.cuda.device_count() > 1:
+#  if torch.cuda.device_count() > 1:
+if args.MGPU:
     print("Let's use", torch.cuda.device_count(), "GPUs!")
     net = nn.DataParallel(net)
 net=net.to(device)
@@ -262,14 +276,20 @@ def test(epoch):
 
     return 100.*float(correct_1)/float(total),100.*float(correct_5)/float(total),test_loss
 
+create_dir(os.path.dirname(args.logdir))
 if not args.resume:
     f=open(args.logdir,'w')
+    f.write("Epoch, tr-top1, tr-top5, tr-loss, tt-top1, tt-top5, tt-loss \n")
+    f.close()
 else:
     f=open(args.logdir,'a')
-for epoch in range(start_epoch, int(args.totalepoch)):
-    acc1,acc5,loss=train(epoch)
-    f.write(str(epoch)+' '+str(acc1)+' '+str(acc5)+' '+str(loss)+' ')
-    acc1,acc5,loss=test(epoch)
-    f.write(str(acc1)+' '+str(acc5)+' '+str(loss)+'\n')
+    #  f.write("Epoch, tr-top1, tr-top5, tr-loss, tt-top1, tt-top5, tt-loss \n")
+    f.close()
 
-f.close()
+for epoch in range(start_epoch, int(args.totalepoch)):
+    f=open(args.logdir,'a')
+    acc1,acc5,loss=train(epoch)
+    f.write("{}, {}, {}, {},".format(str(epoch), str(acc1), str(acc5), str(loss)))
+    acc1,acc5,loss=test(epoch)
+    f.write("{}, {}, {} \n".format(str(acc1), str(acc5), str(loss)))
+    f.close()
